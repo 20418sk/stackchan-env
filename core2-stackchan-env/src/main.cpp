@@ -6,6 +6,7 @@
 #include <Avatar.h>
 #include <LittleFS.h>
 #include <math.h>
+#include <Adafruit_NeoPixel.h>  // ★ 追加：NeoPixel制御用
 
 using namespace m5avatar;
 
@@ -81,6 +82,19 @@ UIMode g_mode = UIMode::Live;
 // 吹き出しON/OFF
 bool g_showSpeech = true;
 
+// ===== LED（本体＋猫耳）設定 =====
+// Core2 for AWS ボトムの SK6812（10個想定）
+static const int BODY_LED_PIN   = 25;   // ★環境によって違ったらここを変えてください
+static const int BODY_LED_COUNT = 10;
+
+// Nekomimi LED（NeoPixel/WS2812互換）左右9個ずつ = 18個
+static const int EARS_LED_PIN   = 26;   // PortB(O) = GPIO26
+static const int EARS_LED_COUNT = 18;
+
+// Adafruit NeoPixel オブジェクト
+Adafruit_NeoPixel bodyStrip(BODY_LED_COUNT, BODY_LED_PIN, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel earsStrip(EARS_LED_COUNT,  EARS_LED_PIN,  NEO_GRB + NEO_KHZ800);
+
 // ==== プロトタイプ ====
 void updateAvatarExpression();
 void updateSpeechForMode();
@@ -90,6 +104,7 @@ void startMQTTBroker();
 void enterAvatarMode();
 void showWifiQRScreen();
 void showUrlQRScreen();
+void updateLedsByTemp();   // ★ 追加：温度に応じたLED更新
 
 // ===== エラーヘルパ：致命的エラーで止める =====
 [[noreturn]] void showFatalAndWait(const char* msg) {
@@ -126,6 +141,50 @@ void showWarning(const char* msg) {
     M5.Display.print("WARN: ");
     M5.Display.print(msg);
     M5.Display.setTextColor(WHITE, BLACK);
+}
+
+// ===== LEDユーティリティ =====
+void setAllLedsColor(uint8_t r, uint8_t g, uint8_t b) {
+    // 本体LED
+    for (int i = 0; i < BODY_LED_COUNT; ++i) {
+        bodyStrip.setPixelColor(i, bodyStrip.Color(r, g, b));
+    }
+    bodyStrip.show();
+
+    // 猫耳LED
+    for (int i = 0; i < EARS_LED_COUNT; ++i) {
+        earsStrip.setPixelColor(i, earsStrip.Color(r, g, b));
+    }
+    earsStrip.show();
+}
+
+void turnOffAllLeds() {
+    setAllLedsColor(0, 0, 0);
+}
+
+// 温度に応じて色切り替え
+//   t < 18℃  → 寒い → 青
+//   t > 30℃  → 暑い → 赤
+//   それ以外 → 消灯
+void updateLedsByTemp() {
+    if (!g_env.valid) {
+        // データ無いときは消灯
+        turnOffAllLeds();
+        return;
+    }
+
+    float t = g_env.temperature;
+
+    if (t < 18.0f) {
+        // 寒い：青
+        setAllLedsColor(0, 0, 255);
+    } else if (t > 30.0f) {
+        // 暑い：赤
+        setAllLedsColor(255, 0, 0);
+    } else {
+        // それ以外はオフ
+        turnOffAllLeds();
+    }
 }
 
 // ---- LittleFS: オフセットの読み書き ----
@@ -373,6 +432,9 @@ void startMQTTBroker() {
             if (g_mode == UIMode::Live) {
                 updateSpeechForMode();
             }
+
+            // ★ 温度更新のたびにLEDも更新
+            updateLedsByTemp();
         }
     });
 
@@ -464,6 +526,8 @@ void handleOffset() {
         if (g_mode == UIMode::Live) {
             updateSpeechForMode();
         }
+        // オフセット変化時もLED更新
+        updateLedsByTemp();
     }
 
     server.sendHeader("Location", "/");
@@ -617,6 +681,14 @@ void setup() {
     server.begin();
     Serial.println("[HTTP] Web console started on http://192.168.4.1/");
 
+    // ---- Step5: LED 初期化 ----
+    M5.Display.println("Step5: init LEDs...");
+    bodyStrip.begin();
+    earsStrip.begin();
+    bodyStrip.setBrightness(40); // 0-255 お好みで
+    earsStrip.setBrightness(40);
+    turnOffAllLeds();
+
     // ---- 起動完了 → QRモードへ ----
     M5.Display.println();
     M5.Display.println("OK. Ready.");
@@ -681,6 +753,7 @@ void loop() {
                 if (g_env.valid) {
                     g_env.temperature -= 0.5f;
                     updateAvatarExpression();
+                    updateLedsByTemp();
                 }
                 updateSpeechForMode();
             }
@@ -690,6 +763,7 @@ void loop() {
                 if (g_env.valid) {
                     g_env.temperature += 0.5f;
                     updateAvatarExpression();
+                    updateLedsByTemp();
                 }
                 updateSpeechForMode();
             }
