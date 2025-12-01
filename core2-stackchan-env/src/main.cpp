@@ -11,76 +11,96 @@
 
 using namespace m5avatar;
 
-// ===== サーボ（首）設定 =====
-Servo servoX;   // 左右
-Servo servoY;   // 上下
-bool  g_servoAttached = false;
+// ======================================================================
+//  サーボ（首）設定
+// ======================================================================
+Servo servoX;   // 左右（ヨー）
+Servo servoY;   // 上下（ピッチ）
+bool  g_servoAttached = false;  // attach 済みかどうか
 
+// サーボの接続ピン（Core2 カスタムシールド前提）
 constexpr int SERVO_X_PIN = 33;
 constexpr int SERVO_Y_PIN = 32;
 
+// 基準角度（センター位置）と左右スイング幅
 constexpr int SERVO_X_CENTER    = 90;
 constexpr int SERVO_Y_CENTER    = 90;
-constexpr int SERVO_X_AMPLITUDE = 15;   // 左右スイング幅
+constexpr int SERVO_X_AMPLITUDE = 15;   // 左右のふり幅
 
+// 首の上下用：現在角度・目標角度・ポーズ切り替えタイミング
 float         g_servoYCurrent = SERVO_Y_CENTER;
 float         g_servoYTarget  = SERVO_Y_CENTER;
 unsigned long g_nextPoseChangeMs = 0;
 
-// ===== SoftAP 設定 =====
+// ======================================================================
+//  SoftAP 設定
+// ======================================================================
 const char* AP_SSID     = "Core2EnvAP";
 const char* AP_PASSWORD = "m5password";
 
-// ===== MQTT 設定 =====
+// ======================================================================
+//  MQTT 設定
+// ======================================================================
 const uint16_t MQTT_PORT  = 1883;
 const char*    MQTT_TOPIC = "home/env/stackchan1";  // StickP2側と合わせる
 
-// ===== LittleFS ファイルパス =====
+// ======================================================================
+//  LittleFS ファイルパス
+// ======================================================================
 const char* LOG_FILE_PATH    = "/logs.csv";
 const char* CONFIG_FILE_PATH = "/config.txt";
 
-// ===== MQTT ブローカ（PicoMQTT）=====
+// ======================================================================
+//  MQTT ブローカ / HTTP サーバ / Avatar
+// ======================================================================
 PicoMQTT::Server mqtt;
+WebServer        server(80);
+Avatar           avatar;
 
-// ===== HTTP サーバ（Webコンソール）=====
-WebServer server(80);
-
-// ===== Avatar =====
-Avatar avatar;
-
-// ===== 起動フェーズ =====
+// ======================================================================
+//  起動フェーズ管理
+// ======================================================================
 enum class BootPhase {
-    QR,       // QRコード表示モード（Avatar未初期化）
-    Avatar    // Avatar＋MQTT＋ボタンUIモード
+    QR,       // QRコード表示モード
+    Avatar    // Avatarモード
 };
 BootPhase g_bootPhase = BootPhase::QR;
 
-// ===== QRサブページ =====
+// ======================================================================
+//  QRサブページ管理
+// ======================================================================
 enum class QRSubPage {
     Wifi,
     Url
 };
 QRSubPage g_qrPage = QRSubPage::Wifi;
 
-// ===== 受信した環境値 =====
+// ======================================================================
+//  受信した環境値
+// ======================================================================
 struct EnvReading {
     float temperature;  // ℃（オフセット適用後）
     float humidity;     // %
     float pressure;     // hPa
-    bool  valid;
+    bool  valid;        // 有効データを受信済みか
 };
 
 EnvReading g_env = {NAN, NAN, NAN, false};
 
-// ===== 温度オフセット（補正） =====
+// ======================================================================
+//  温度オフセット（補正値）
+// ======================================================================
 float g_tempOffset = 0.0f;
 
-// ===== ログ管理（メモリ上） =====
+// ======================================================================
+//  ログ管理（メモリ上）
+//  - ログ毎に「記録日時文字列」を持つ
+// ======================================================================
 struct EnvLogEntry {
-    float    temperature;
-    float    humidity;
-    float    pressure;
-    uint32_t ageSec;
+    float temperature;
+    float humidity;
+    float pressure;
+    char  datetime[20];   // "YYYY/MM/DD HH:MM:SS" + 終端 = 20バイト
 };
 
 constexpr size_t LOG_CAPACITY = 32;
@@ -91,22 +111,26 @@ size_t      g_logSelected = 0;
 // 吹き出しON/OFF
 bool g_showSpeech = true;
 
-// ===== LED（本体＋猫耳）設定 =====
+// ======================================================================
+//  LED（本体＋猫耳）設定
+// ======================================================================
 // Core2 底面 SK6812（10個）
 static const int BODY_LED_PIN   = 25;
 static const int BODY_LED_COUNT = 10;
 
 // 猫耳 LED（左右9個ずつ = 18個）
-static const int EARS_LED_PIN   = 26;   // PortB OUT
+static const int EARS_LED_PIN   = 26;   // PortB OUT などに接続
 static const int EARS_LED_COUNT = 18;
 
-// Adafruit NeoPixel オブジェクト
 Adafruit_NeoPixel bodyStrip(BODY_LED_COUNT, BODY_LED_PIN, NEO_GRB + NEO_KHZ800);
 Adafruit_NeoPixel earsStrip(EARS_LED_COUNT, EARS_LED_PIN, NEO_GRB + NEO_KHZ800);
 
 bool g_ledInited = false;
+bool g_ledWasOn = false;   // 直前フレームでLEDが点灯していたか？
 
-// ==== プロトタイプ ====
+// ======================================================================
+//  プロトタイプ宣言
+// ======================================================================
 void updateAvatarExpression();
 void updateSpeech();
 bool  saveOffsetToFS();
@@ -117,10 +141,15 @@ void  showWifiQRScreen();
 void  showUrlQRScreen();
 void  initLeds();
 void  updateLedsForTemp();
+void  playScreamSound();
 void  initServo();
 void  updateServoIdle();
+void  getCurrentDatetimeString(char* buf, size_t len);
+void  handleSetTime();
 
-// ===== エラーヘルパ：致命的エラーで止める =====
+// ======================================================================
+//  致命的エラー表示
+// ======================================================================
 [[noreturn]] void showFatalAndWait(const char* msg) {
     M5.Display.fillScreen(RED);
     M5.Display.setTextColor(WHITE, RED);
@@ -142,7 +171,9 @@ void  updateServoIdle();
     }
 }
 
-// ===== エラーヘルパ：警告表示（処理は継続）=====
+// ======================================================================
+//  警告表示（処理継続）
+// ======================================================================
 void showWarning(const char* msg) {
     int16_t w = M5.Display.width();
     int16_t h = M5.Display.height();
@@ -157,17 +188,17 @@ void showWarning(const char* msg) {
     M5.Display.setTextColor(WHITE, BLACK);
 }
 
-// ===== LEDユーティリティ =====
+// ======================================================================
+//  LEDユーティリティ
+// ======================================================================
 void setAllLedsColor(uint8_t r, uint8_t g, uint8_t b) {
     if (!g_ledInited) return;
 
-    // 本体
     for (int i = 0; i < BODY_LED_COUNT; ++i) {
         bodyStrip.setPixelColor(i, bodyStrip.Color(r, g, b));
     }
     bodyStrip.show();
 
-    // 猫耳
     for (int i = 0; i < EARS_LED_COUNT; ++i) {
         earsStrip.setPixelColor(i, earsStrip.Color(r, g, b));
     }
@@ -178,31 +209,70 @@ void turnOffAllLeds() {
     setAllLedsColor(0, 0, 0);
 }
 
-// 温度に応じて色切り替え
-// t < 18℃ → 寒い → 青
-// t > 30℃ → 暑い → 赤
-// それ以外 → 消灯
+// 温度に応じて LED 色切り替え
 void updateLedsForTemp() {
     if (!g_ledInited) return;
 
+    bool shouldBeOn = false;
+
     if (!g_env.valid) {
         turnOffAllLeds();
+        g_ledWasOn = false;
         return;
     }
 
     float t = g_env.temperature;
+
     if (t < 18.0f) {
-        // 寒い：青（ちょっと控えめ）
-        setAllLedsColor(0, 0, 160);
+        setAllLedsColor(0, 0, 160);   // 青
+        shouldBeOn = true;
     } else if (t > 30.0f) {
-        // 暑い：赤（ちょっと控えめ）
-        setAllLedsColor(200, 40, 40);
+        setAllLedsColor(200, 40, 40); // 赤
+        shouldBeOn = true;
     } else {
         turnOffAllLeds();
+        shouldBeOn = false;
     }
+
+    // ★ 光った瞬間に悲鳴を鳴らす
+    if (shouldBeOn && !g_ledWasOn) {
+        playScreamSound();
+    }
+
+    g_ledWasOn = shouldBeOn;
 }
 
-// ---- LittleFS: オフセットの読み書き ----
+// ======================================================================
+//  人間が「助けたくなる」弱々しい電子泣き声
+//  - 高め（幼さ）
+//  - 震える（弱っている）
+//  - ひっ → ひぃ〜（感情の変化）
+//  - 全体的に細くて息が弱い
+// ======================================================================
+void playScreamSound() {
+
+    // ① 小さく呼びかける「ひっ…」
+    M5.Speaker.tone(1800, 50);   // か細い高め
+    delay(40);
+
+    // ② 震える弱音「ぴ…ひっ…」
+    for (int i = 0; i < 5; i++) {
+        int f = 1600 + (int)(sin(i * 1.1f) * 180.0f);  // 揺れを大きめに
+        M5.Speaker.tone(f, 40);
+        delay(25);
+    }
+
+    // ③ 今にも涙がこぼれそうな伸び「ひぃ〜〜；；」
+    M5.Speaker.tone(2200, 280);  // 弱く長く泣くイメージ
+
+    // ④ 息がしぼむ（弱り感）
+    M5.Speaker.tone(1300, 60);
+}
+
+
+// ======================================================================
+//  LittleFS: オフセットの読み書き
+// ======================================================================
 bool loadOffsetFromFS() {
     if (!LittleFS.exists(CONFIG_FILE_PATH)) return false;
     File f = LittleFS.open(CONFIG_FILE_PATH, FILE_READ);
@@ -225,7 +295,26 @@ bool saveOffsetToFS() {
     return true;
 }
 
-// ---- LittleFS: ログの読み書き ----
+// ======================================================================
+//  RTC → "YYYY/MM/DD HH:MM:SS" に変換
+// ======================================================================
+void getCurrentDatetimeString(char* buf, size_t len) {
+    auto dt = M5.Rtc.getDateTime();  // rtc_datetime_t
+
+    snprintf(buf, len,
+             "%04d/%02d/%02d %02d:%02d:%02d",
+             (int)dt.date.year,
+             (int)dt.date.month,
+             (int)dt.date.date,
+             (int)dt.time.hours,
+             (int)dt.time.minutes,
+             (int)dt.time.seconds);
+}
+
+// ======================================================================
+//  LittleFS: ログの読み書き
+//   CSV: temperature,humidity,pressure,datetime
+// ======================================================================
 bool loadLogsFromFS() {
     g_logCount    = 0;
     g_logSelected = 0;
@@ -240,13 +329,17 @@ bool loadLogsFromFS() {
         if (line.length() == 0) continue;
 
         float t, h, p;
-        unsigned long age;
-        if (sscanf(line.c_str(), "%f,%f,%f,%lu", &t, &h, &p, &age) == 4) {
+        char  dtstr[20] = {0};
+
+        // datetime はスペースを含むので %[^\n] で行末まで読む
+        if (sscanf(line.c_str(), "%f,%f,%f,%19[^\n]",
+                   &t, &h, &p, dtstr) == 4) {
             EnvLogEntry e;
             e.temperature = t;
             e.humidity    = h;
             e.pressure    = p;
-            e.ageSec      = age;
+            strncpy(e.datetime, dtstr, sizeof(e.datetime));
+            e.datetime[sizeof(e.datetime) - 1] = '\0';
             g_logs[g_logCount++] = e;
         }
     }
@@ -264,11 +357,11 @@ bool rewriteLogsToFS() {
 
     for (size_t i = 0; i < g_logCount; ++i) {
         const auto& e = g_logs[i];
-        f.printf("%.1f,%.1f,%.1f,%lu\n",
+        f.printf("%.1f,%.1f,%.1f,%s\n",
                  e.temperature,
                  e.humidity,
                  e.pressure,
-                 (unsigned long)e.ageSec);
+                 e.datetime);
     }
     f.close();
     return true;
@@ -278,16 +371,18 @@ bool appendLogToFS(const EnvLogEntry& e) {
     File f = LittleFS.open(LOG_FILE_PATH, FILE_APPEND);
     if (!f) return false;
 
-    f.printf("%.1f,%.1f,%.1f,%lu\n",
+    f.printf("%.1f,%.1f,%.1f,%s\n",
              e.temperature,
              e.humidity,
              e.pressure,
-             (unsigned long)e.ageSec);
+             e.datetime);
     f.close();
     return true;
 }
 
-// ---- ログ追加 ----
+// ======================================================================
+//  ログ追加（変化が小さいときはスキップ）
+// ======================================================================
 void addLogEntry(const EnvReading& env) {
     if (!env.valid) return;
 
@@ -304,7 +399,7 @@ void addLogEntry(const EnvReading& env) {
     e.temperature = env.temperature;
     e.humidity    = env.humidity;
     e.pressure    = env.pressure;
-    e.ageSec      = millis() / 1000;
+    getCurrentDatetimeString(e.datetime, sizeof(e.datetime));
 
     if (g_logCount < LOG_CAPACITY) {
         g_logs[g_logCount++] = e;
@@ -316,10 +411,13 @@ void addLogEntry(const EnvReading& env) {
     }
 
     g_logSelected = (g_logCount > 0) ? (g_logCount - 1) : 0;
+
     appendLogToFS(e);
 }
 
-// ---- ログ削除（1件） ----
+// ======================================================================
+//  ログ削除 / 全削除
+// ======================================================================
 void deleteLogAt(size_t index) {
     if (g_logCount == 0) return;
     if (index >= g_logCount) return;
@@ -340,26 +438,29 @@ void deleteLogAt(size_t index) {
     }
 }
 
-// ---- 全ログ削除 ----
 void clearAllLogs() {
     g_logCount    = 0;
     g_logSelected = 0;
     LittleFS.remove(LOG_FILE_PATH);
 }
 
-// ---- LED 初期化 ----
+// ======================================================================
+//  LED 初期化
+// ======================================================================
 void initLeds() {
     bodyStrip.begin();
     earsStrip.begin();
 
-    bodyStrip.setBrightness(40);  // お好みで
+    bodyStrip.setBrightness(40);
     earsStrip.setBrightness(40);
 
     turnOffAllLeds();
     g_ledInited = true;
 }
 
-// ---- サーボ初期化（Avatarモードに入ったときに1回だけ呼ぶ）----
+// ======================================================================
+//  サーボ初期化
+// ======================================================================
 void initServo() {
     if (g_servoAttached) return;
 
@@ -378,15 +479,25 @@ void initServo() {
     g_servoAttached = true;
 }
 
-// ---- 公式風 IDLE：左右ゆらゆら＋たまに首かしげ ----
+// ======================================================================
+//  ボタン操作音
+// ======================================================================
+void playClickSound() {
+    // 周波数 1000Hz、40ms くらいの短い「ピッ」
+    M5.Speaker.tone(1000, 40);
+}
+
+
+// ======================================================================
+//  公式風 IDLE モーション
+// ======================================================================
 void updateServoIdle() {
     if (!g_servoAttached) return;
 
     unsigned long now = millis();
 
-    // 左右スイング（sin）
     const float PI_F    = 3.1415926f;
-    const float PERIOD  = 4.5f;         // 左右一往復の秒数
+    const float PERIOD  = 4.5f;
     float t = now / 1000.0f;
     float s = sinf(2.0f * PI_F * t / PERIOD);  // -1〜1
 
@@ -394,7 +505,6 @@ void updateServoIdle() {
     yaw = constrain(yaw, 0, 180);
     servoX.write(yaw);
 
-    // 一定時間ごとに首の上下ターゲットをランダム変更
     if (now >= g_nextPoseChangeMs) {
         static const int offsets[] = { -15, -5, 0, 5, 10 };
         int idx = random(0, 5);
@@ -406,14 +516,15 @@ void updateServoIdle() {
         g_nextPoseChangeMs = now + interval;
     }
 
-    // イージングでふわっと目標に近づける
     g_servoYCurrent += (g_servoYTarget - g_servoYCurrent) * 0.05f;
     int pitch = (int)(g_servoYCurrent + 0.5f);
     pitch = constrain(pitch, 0, 180);
     servoY.write(pitch);
 }
 
-// ---- 表情更新 ----
+// ======================================================================
+//  Avatar 表情
+// ======================================================================
 void updateAvatarExpression() {
     if (!g_env.valid) {
         avatar.setExpression(Expression::Neutral);
@@ -438,7 +549,9 @@ void updateAvatarExpression() {
     avatar.setExpression(expr);
 }
 
-// ---- 吹き出し更新（単一モード） ----
+// ======================================================================
+//  吹き出し
+// ======================================================================
 void updateSpeech() {
     if (!g_showSpeech) {
         avatar.setSpeechText("");
@@ -450,16 +563,18 @@ void updateSpeech() {
         return;
     }
 
-    char buf[160];
+    char buf[200];
     snprintf(buf, sizeof(buf),
-             "Now T:%.1fC (off:%.1f)\nH:%.0f%% P:%.0fhPa\nLogs:%d",
-             g_env.temperature, g_tempOffset,
-             g_env.humidity, g_env.pressure,
-             (int)g_logCount);
+             "Temp: %.1fC  Hum: %.0f%%",
+             g_env.temperature,
+             g_env.humidity);
+
     avatar.setSpeechText(buf);
 }
 
-// ---- SoftAP 起動 ----
+// ======================================================================
+//  SoftAP 起動
+// ======================================================================
 bool startSoftAP() {
     WiFi.mode(WIFI_AP);
 
@@ -483,7 +598,9 @@ bool startSoftAP() {
     return true;
 }
 
-// ---- MQTT ブローカ初期化 ----
+// ======================================================================
+//  MQTT ブローカ
+// ======================================================================
 void startMQTTBroker() {
     mqtt.subscribe("#", [](const char* topic, const char* payload) {
         if (strcmp(topic, MQTT_TOPIC) != 0) return;
@@ -508,8 +625,9 @@ void startMQTTBroker() {
     Serial.println("[MQTT] Broker started (PicoMQTT)");
 }
 
-// ===== HTTP ハンドラ =====
-
+// ======================================================================
+//  HTTP: ルート（Webコンソール）
+// ======================================================================
 void handleRoot() {
     String html;
     html.reserve(4096);
@@ -540,7 +658,19 @@ void handleRoot() {
     }
     html += "</ul>";
 
-    // オフセット操作（Webからのみ変更）
+    // RTC表示 + 設定リンク
+    {
+        char nowBuf[20];
+        getCurrentDatetimeString(nowBuf, sizeof(nowBuf));
+
+        html += "<h3>RTC Time</h3>";
+        html += "<p>Current RTC: <b>";
+        html += nowBuf;
+        html += "</b></p>";
+        html += "<p><a class='btn' href='/settime'>Set RTC Time</a></p>";
+    }
+
+    // オフセット操作
     html += "<h3>Offset</h3>";
     html += "<p>Temp offset: <b>" + String(g_tempOffset, 1) + " &deg;C</b></p>";
     html += "<p>";
@@ -549,28 +679,42 @@ void handleRoot() {
     html += "</p>";
 
     // ログ一覧
-    html += "<h3>Logs</h3>";
-    html += "<p>Total: " + String((int)g_logCount) + "</p>";
+html += "<h3>Logs</h3>";
+html += "<p>Total: " + String((int)g_logCount) + "</p>";
 
-    html += "<table><tr>"
-            "<th>#</th><th>Temp</th><th>Hum</th><th>Press</th><th>Age(s)</th><th>Action</th>"
-            "</tr>";
-    for (size_t i = 0; i < g_logCount; ++i) {
-        const auto& e = g_logs[i];
-        html += "<tr>";
-        html += "<td>" + String((int)i) + "</td>";
-        html += "<td>" + String(e.temperature, 1) + "</td>";
-        html += "<td>" + String(e.humidity, 0)    + "</td>";
-        html += "<td>" + String(e.pressure, 1)    + "</td>";
-        html += "<td>" + String((unsigned long)e.ageSec) + "</td>";
-        html += "<td><a class='btn' href='/delete?index=" + String((int)i) + "'>Delete</a></td>";
-        html += "</tr>";
-    }
-    html += "</table>";
+html += "<table><tr>"
+        "<th>#</th>"
+        "<th>Datetime</th>"
+        "<th>Temp</th>"
+        "<th>Hum</th>"
+        "<th>Press</th>"
+        "<th>Action</th>"
+        "</tr>";
 
-    if (g_logCount > 0) {
-        html += "<p><a class='btn' href='/clear'>Clear All Logs</a></p>";
-    }
+for (size_t i = 0; i < g_logCount; ++i) {
+    const auto& e = g_logs[i];
+
+    // ここは「表示時のRTC時刻」になっています
+    // →「ログ取得タイムスタンプを保存したい」場合は別方式にできます！
+    char dtBuf[20];
+    getCurrentDatetimeString(dtBuf, sizeof(dtBuf));
+
+    html += "<tr>";
+    html += "<td>" + String((int)i) + "</td>";              // ← # 列（復活）
+    html += "<td>" + String(dtBuf) + "</td>";               // Datetime
+    html += "<td>" + String(e.temperature, 1) + "</td>";    // Temp
+    html += "<td>" + String(e.humidity, 0)    + "</td>";    // Hum
+    html += "<td>" + String(e.pressure, 1)    + "</td>";    // Press
+    html += "<td><a class='btn' href='/delete?index=" + String((int)i) +
+            "'>Delete</a></td>";                           // Action
+    html += "</tr>";
+}
+
+html += "</table>";
+
+if (g_logCount > 0) {
+    html += "<p><a class='btn' href='/clear'>Clear All Logs</a></p>";
+}
 
     html += "<hr><p>操作メモ：<br>"
             "- 起動直後は本体画面にQRコードが出ます。<br>"
@@ -582,6 +726,9 @@ void handleRoot() {
     server.send(200, "text/html", html);
 }
 
+// ======================================================================
+//  HTTP: オフセット変更
+// ======================================================================
 void handleOffset() {
     if (!server.hasArg("delta")) {
         server.send(400, "text/plain", "delta param required");
@@ -602,6 +749,9 @@ void handleOffset() {
     server.send(303, "text/plain", "Redirecting...");
 }
 
+// ======================================================================
+//  HTTP: ログ削除 / 全削除
+// ======================================================================
 void handleDelete() {
     if (!server.hasArg("index")) {
         server.send(400, "text/plain", "index param required");
@@ -625,11 +775,126 @@ void handleClear() {
     server.send(303, "text/plain", "Redirecting...");
 }
 
+// ======================================================================
+//  HTTP: RTC 時刻設定 (/settime)
+//   - /settime?dt=YYYY/MM/DD HH:MM:SS
+//   - パラメータなしでアクセス → 設定ページを表示
+//   - 「この端末の時間でセット」ボタンで JS の Date を RTC に反映
+// ======================================================================
+void handleSetTime() {
+    // dt 無し → 設定フォームを表示
+    if (!server.hasArg("dt")) {
+        String html;
+        html.reserve(2048);
+
+        char nowBuf[20];
+        getCurrentDatetimeString(nowBuf, sizeof(nowBuf));
+
+        html += "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
+        html += "<title>Set RTC Time</title>";
+        html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
+        html += "<style>";
+        html += "body{font-family:sans-serif;margin:8px;}";
+        html += "input[type=text]{width:180px;}";
+        html += "button{margin:4px 0;padding:4px 8px;}";
+        html += "</style>";
+        html += "<script>";
+        // JSでスマホ(ブラウザ)の現在時刻を取得して /settime?dt=... に投げる
+        html += "function pad(n){return n<10?'0'+n:n;}";
+        html += "function setFromDeviceTime(){";
+        html += "  var d=new Date();";
+        html += "  var y=d.getFullYear();";
+        html += "  var m=pad(d.getMonth()+1);"; // 0-11 → 1-12
+        html += "  var dd=pad(d.getDate());";
+        html += "  var hh=pad(d.getHours());";
+        html += "  var mm=pad(d.getMinutes());";
+        html += "  var ss=pad(d.getSeconds());";
+        html += "  var s=y+'/'+m+'/'+dd+' '+hh+':'+mm+':'+ss;";
+        html += "  var url='/settime?dt='+encodeURIComponent(s);";
+        html += "  location.href=url;";
+        html += "}";
+        html += "</script>";
+        html += "</head><body>";
+
+        html += "<h2>Set RTC Time</h2>";
+        html += "<p>現在のRTC: ";
+        html += nowBuf;
+        html += "</p>";
+
+        html += "<h3>このスマホの時刻でセット</h3>";
+        html += "<p><button onclick='setFromDeviceTime()'>";
+        html += "Set RTC from this device time";
+        html += "</button></p>";
+
+        html += "<hr>";
+
+        html += "<h3>手動入力でセット</h3>";
+        html += "<form method='GET' action='/settime'>";
+        html += "日時 (YYYY/MM/DD HH:MM:SS):<br>";
+        html += "<input type='text' name='dt' value='";
+        html += nowBuf;
+        html += "'><br><br>";
+        html += "<input type='submit' value='Set Time'>";
+        html += "</form>";
+
+        html += "<p><a href='/'>Back to Console</a></p>";
+        html += "</body></html>";
+
+        server.send(200, "text/html", html);
+        return;
+    }
+
+    // ここから先は「dt 付きで来たとき」の処理（前と同じ）
+
+    String s = server.arg("dt");
+    s.trim();
+
+    int yyyy, mm, dd, HH, MM, SS;
+    if (sscanf(s.c_str(), "%d/%d/%d %d:%d:%d",
+               &yyyy, &mm, &dd, &HH, &MM, &SS) != 6) {
+        server.send(400, "text/plain", "Invalid format. Use YYYY/MM/DD HH:MM:SS");
+        return;
+    }
+
+    if (yyyy < 2000 || mm < 1 || mm > 12 || dd < 1 || dd > 31 ||
+        HH < 0 || HH > 23 || MM < 0 || MM > 59 || SS < 0 || SS > 59) {
+        server.send(400, "text/plain", "Invalid datetime value");
+        return;
+    }
+
+    m5::rtc_date_t date;
+    date.year    = (uint16_t)yyyy;
+    date.month   = (uint8_t)mm;
+    date.date    = (uint8_t)dd;
+    date.weekDay = 0; // 未使用
+
+    m5::rtc_time_t rtcTime;
+    rtcTime.hours   = (uint8_t)HH;
+    rtcTime.minutes = (uint8_t)MM;
+    rtcTime.seconds = (uint8_t)SS;
+
+    m5::rtc_datetime_t dt;
+    dt.date = date;
+    dt.time = rtcTime;
+
+    M5.Rtc.setDateTime(dt);
+    Serial.printf("[RTC] Set to %04d/%02d/%02d %02d:%02d:%02d\n",
+                  yyyy, mm, dd, HH, MM, SS);
+
+    server.sendHeader("Location", "/");
+    server.send(303, "RTC updated. Redirecting...");
+}
+
+// ======================================================================
+//  HTTP: NotFound
+// ======================================================================
 void handleNotFound() {
     server.send(404, "text/plain", "Not found");
 }
 
-// ===== QR画面（Wi-Fi用）=====
+// ======================================================================
+//  QR画面（Wi-Fi用）
+// ======================================================================
 void showWifiQRScreen() {
     M5.Display.fillScreen(BLACK);
     M5.Display.setTextColor(WHITE, BLACK);
@@ -657,7 +922,9 @@ void showWifiQRScreen() {
     M5.Display.println("C: Avatar mode start");
 }
 
-// ===== QR画面（URL用）=====
+// ======================================================================
+//  QR画面（URL用）
+// ======================================================================
 void showUrlQRScreen() {
     M5.Display.fillScreen(BLACK);
     M5.Display.setTextColor(WHITE, BLACK);
@@ -684,7 +951,9 @@ void showUrlQRScreen() {
     M5.Display.println("C: Avatar mode start");
 }
 
-// ===== Avatarモードへの切り替え =====
+// ======================================================================
+//  Avatarモードへの切り替え
+// ======================================================================
 void enterAvatarMode() {
     if (g_bootPhase == BootPhase::Avatar) return;
 
@@ -692,24 +961,29 @@ void enterAvatarMode() {
 
     avatar.init();
     avatar.setExpression(Expression::Neutral);
-    updateSpeech();       // "Waiting MQTT..." 等
+    updateSpeech();
 
-    initServo();          // サーボ初期化
-    updateLedsForTemp();  // 初期状態は消灯になる
-
+    initServo();
+    updateLedsForTemp();
     startMQTTBroker();
+
     g_bootPhase = BootPhase::Avatar;
 
     Serial.println("[BOOT] Enter Avatar mode");
 }
 
-// ===== setup =====
+// ======================================================================
+//  setup()
+// ======================================================================
 void setup() {
     auto cfg = M5.config();
     M5.begin(cfg);
 
     Serial.begin(115200);
     delay(200);
+
+    // スピーカーの音量（0〜255）
+    M5.Speaker.setVolume(64);
 
     randomSeed(esp_random());
 
@@ -723,12 +997,12 @@ void setup() {
     M5.Display.println();
     M5.Display.println("Step1: FS init...");
 
-    // ---- Step1: LittleFS ----
+    // Step1: LittleFS
     if (!LittleFS.begin(true)) {
         showFatalAndWait("LittleFS init failed");
     }
 
-    // ---- Step2: 設定・ログ読み込み ----
+    // Step2: 設定・ログ読み込み
     M5.Display.println("Step2: load config/logs...");
     if (!loadOffsetFromFS()) {
         showWarning("No config, use offset=0.0");
@@ -737,27 +1011,27 @@ void setup() {
         showWarning("No logs found");
     }
 
-    // ---- Step3: SoftAP ----
+    // Step3: SoftAP
     M5.Display.println("Step3: start SoftAP...");
     if (!startSoftAP()) {
         showFatalAndWait("SoftAP start failed");
     }
 
-    // ---- Step4: HTTP server ----
+    // Step4: HTTP server
     M5.Display.println("Step4: start HTTP...");
-    server.on("/",       HTTP_GET, handleRoot);
-    server.on("/offset", HTTP_GET, handleOffset);
-    server.on("/delete", HTTP_GET, handleDelete);
-    server.on("/clear",  HTTP_GET, handleClear);
+    server.on("/",        HTTP_GET, handleRoot);
+    server.on("/offset",  HTTP_GET, handleOffset);
+    server.on("/delete",  HTTP_GET, handleDelete);
+    server.on("/clear",   HTTP_GET, handleClear);
+    server.on("/settime", HTTP_GET, handleSetTime);
     server.onNotFound(handleNotFound);
     server.begin();
     Serial.println("[HTTP] Web console started on http://192.168.4.1/");
 
-    // ---- Step5: LED 初期化 ----
+    // Step5: LED 初期化
     M5.Display.println("Step5: init LEDs...");
     initLeds();
 
-    // ---- 起動完了 → QRモードへ ----
     M5.Display.println();
     M5.Display.println("OK. Ready.");
     delay(700);
@@ -767,16 +1041,17 @@ void setup() {
     showWifiQRScreen();
 }
 
-// ===== loop =====
+// ======================================================================
+//  loop()
+// ======================================================================
 void loop() {
     M5.update();
-
-    // HTTP / WiFi は常に処理
     server.handleClient();
 
-    // 起動直後の QR モード
+    // QRモード
     if (g_bootPhase == BootPhase::QR) {
         if (M5.BtnB.wasPressed()) {
+            playClickSound();
             if (g_qrPage == QRSubPage::Wifi) {
                 g_qrPage = QRSubPage::Url;
                 showUrlQRScreen();
@@ -787,6 +1062,7 @@ void loop() {
         }
 
         if (M5.BtnC.wasPressed()) {
+            playClickSound();
             enterAvatarMode();
         }
 
@@ -794,28 +1070,33 @@ void loop() {
         return;
     }
 
-    // ===== ここから Avatar モード中の処理 =====
-
-    // A: 吹き出しON/OFF
+    // Avatarモード
     if (M5.BtnA.wasPressed()) {
+        playClickSound();
         g_showSpeech = !g_showSpeech;
         updateSpeech();
     }
 
-    // B: ログを1件追加
     if (M5.BtnB.wasPressed()) {
+        playClickSound();
         if (g_env.valid) {
             addLogEntry(g_env);
             updateSpeech();
         }
     }
 
-    // C: 今は特に使っていない（将来拡張用）
+        if (M5.BtnC.wasPressed()) {
+        // 未使用、将来機能を足す
+        // 音だけ鳴らす
+        playClickSound();
+    }
 
-    // MQTT ブローカ処理
     mqtt.loop();
+    updateServoIdle();
 
-    // サーボの公式風「ゆらゆら＋かしげ」
+    delay(10);
+
+    mqtt.loop();
     updateServoIdle();
 
     delay(10);
