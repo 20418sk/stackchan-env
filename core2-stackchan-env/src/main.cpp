@@ -6,9 +6,26 @@
 #include <Avatar.h>
 #include <LittleFS.h>
 #include <math.h>
-#include <Adafruit_NeoPixel.h>  // ★ 追加：NeoPixel制御用
+#include <Adafruit_NeoPixel.h>
+#include <ESP32Servo.h>
 
 using namespace m5avatar;
+
+// ===== サーボ（首）設定 =====
+Servo servoX;   // 左右
+Servo servoY;   // 上下
+bool  g_servoAttached = false;
+
+constexpr int SERVO_X_PIN = 33;
+constexpr int SERVO_Y_PIN = 32;
+
+constexpr int SERVO_X_CENTER    = 90;
+constexpr int SERVO_Y_CENTER    = 90;
+constexpr int SERVO_X_AMPLITUDE = 15;   // 左右スイング幅
+
+float         g_servoYCurrent = SERVO_Y_CENTER;
+float         g_servoYTarget  = SERVO_Y_CENTER;
+unsigned long g_nextPoseChangeMs = 0;
 
 // ===== SoftAP 設定 =====
 const char* AP_SSID     = "Core2EnvAP";
@@ -71,40 +88,37 @@ EnvLogEntry g_logs[LOG_CAPACITY];
 size_t      g_logCount    = 0;
 size_t      g_logSelected = 0;
 
-// ===== UI モード（Avatarモード中）=====
-enum class UIMode {
-    Live,     // 現在値モード
-    Offset    // オフセット調整モード（Core2ボタン）
-};
-
-UIMode g_mode = UIMode::Live;
-
 // 吹き出しON/OFF
 bool g_showSpeech = true;
 
 // ===== LED（本体＋猫耳）設定 =====
-// Core2 for AWS ボトムの SK6812（10個想定）
-static const int BODY_LED_PIN   = 25;   // ★環境によって違ったらここを変えてください
+// Core2 底面 SK6812（10個）
+static const int BODY_LED_PIN   = 25;
 static const int BODY_LED_COUNT = 10;
 
-// Nekomimi LED（NeoPixel/WS2812互換）左右9個ずつ = 18個
-static const int EARS_LED_PIN   = 26;   // PortB(O) = GPIO26
+// 猫耳 LED（左右9個ずつ = 18個）
+static const int EARS_LED_PIN   = 26;   // PortB OUT
 static const int EARS_LED_COUNT = 18;
 
 // Adafruit NeoPixel オブジェクト
 Adafruit_NeoPixel bodyStrip(BODY_LED_COUNT, BODY_LED_PIN, NEO_GRB + NEO_KHZ800);
-Adafruit_NeoPixel earsStrip(EARS_LED_COUNT,  EARS_LED_PIN,  NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel earsStrip(EARS_LED_COUNT, EARS_LED_PIN, NEO_GRB + NEO_KHZ800);
+
+bool g_ledInited = false;
 
 // ==== プロトタイプ ====
 void updateAvatarExpression();
-void updateSpeechForMode();
-bool saveOffsetToFS();
-bool rewriteLogsToFS();
-void startMQTTBroker();
-void enterAvatarMode();
-void showWifiQRScreen();
-void showUrlQRScreen();
-void updateLedsByTemp();   // ★ 追加：温度に応じたLED更新
+void updateSpeech();
+bool  saveOffsetToFS();
+bool  rewriteLogsToFS();
+void  startMQTTBroker();
+void  enterAvatarMode();
+void  showWifiQRScreen();
+void  showUrlQRScreen();
+void  initLeds();
+void  updateLedsForTemp();
+void  initServo();
+void  updateServoIdle();
 
 // ===== エラーヘルパ：致命的エラーで止める =====
 [[noreturn]] void showFatalAndWait(const char* msg) {
@@ -145,13 +159,15 @@ void showWarning(const char* msg) {
 
 // ===== LEDユーティリティ =====
 void setAllLedsColor(uint8_t r, uint8_t g, uint8_t b) {
-    // 本体LED
+    if (!g_ledInited) return;
+
+    // 本体
     for (int i = 0; i < BODY_LED_COUNT; ++i) {
         bodyStrip.setPixelColor(i, bodyStrip.Color(r, g, b));
     }
     bodyStrip.show();
 
-    // 猫耳LED
+    // 猫耳
     for (int i = 0; i < EARS_LED_COUNT; ++i) {
         earsStrip.setPixelColor(i, earsStrip.Color(r, g, b));
     }
@@ -163,26 +179,25 @@ void turnOffAllLeds() {
 }
 
 // 温度に応じて色切り替え
-//   t < 18℃  → 寒い → 青
-//   t > 30℃  → 暑い → 赤
-//   それ以外 → 消灯
-void updateLedsByTemp() {
+// t < 18℃ → 寒い → 青
+// t > 30℃ → 暑い → 赤
+// それ以外 → 消灯
+void updateLedsForTemp() {
+    if (!g_ledInited) return;
+
     if (!g_env.valid) {
-        // データ無いときは消灯
         turnOffAllLeds();
         return;
     }
 
     float t = g_env.temperature;
-
     if (t < 18.0f) {
-        // 寒い：青
-        setAllLedsColor(0, 0, 255);
+        // 寒い：青（ちょっと控えめ）
+        setAllLedsColor(0, 0, 160);
     } else if (t > 30.0f) {
-        // 暑い：赤
-        setAllLedsColor(255, 0, 0);
+        // 暑い：赤（ちょっと控えめ）
+        setAllLedsColor(200, 40, 40);
     } else {
-        // それ以外はオフ
         turnOffAllLeds();
     }
 }
@@ -332,6 +347,72 @@ void clearAllLogs() {
     LittleFS.remove(LOG_FILE_PATH);
 }
 
+// ---- LED 初期化 ----
+void initLeds() {
+    bodyStrip.begin();
+    earsStrip.begin();
+
+    bodyStrip.setBrightness(40);  // お好みで
+    earsStrip.setBrightness(40);
+
+    turnOffAllLeds();
+    g_ledInited = true;
+}
+
+// ---- サーボ初期化（Avatarモードに入ったときに1回だけ呼ぶ）----
+void initServo() {
+    if (g_servoAttached) return;
+
+    servoX.setPeriodHertz(50);
+    servoY.setPeriodHertz(50);
+    servoX.attach(SERVO_X_PIN, 500, 2400);
+    servoY.attach(SERVO_Y_PIN, 500, 2400);
+
+    servoX.write(SERVO_X_CENTER);
+    servoY.write(SERVO_Y_CENTER);
+
+    g_servoYCurrent = SERVO_Y_CENTER;
+    g_servoYTarget  = SERVO_Y_CENTER;
+    g_nextPoseChangeMs = millis() + random(3000, 7000);
+
+    g_servoAttached = true;
+}
+
+// ---- 公式風 IDLE：左右ゆらゆら＋たまに首かしげ ----
+void updateServoIdle() {
+    if (!g_servoAttached) return;
+
+    unsigned long now = millis();
+
+    // 左右スイング（sin）
+    const float PI_F    = 3.1415926f;
+    const float PERIOD  = 4.5f;         // 左右一往復の秒数
+    float t = now / 1000.0f;
+    float s = sinf(2.0f * PI_F * t / PERIOD);  // -1〜1
+
+    int yaw = SERVO_X_CENTER + (int)(SERVO_X_AMPLITUDE * s);
+    yaw = constrain(yaw, 0, 180);
+    servoX.write(yaw);
+
+    // 一定時間ごとに首の上下ターゲットをランダム変更
+    if (now >= g_nextPoseChangeMs) {
+        static const int offsets[] = { -15, -5, 0, 5, 10 };
+        int idx = random(0, 5);
+        int base = SERVO_Y_CENTER + offsets[idx];
+        base = constrain(base, 40, 140);
+        g_servoYTarget = base;
+
+        unsigned long interval = (unsigned long)random(5000, 12001);
+        g_nextPoseChangeMs = now + interval;
+    }
+
+    // イージングでふわっと目標に近づける
+    g_servoYCurrent += (g_servoYTarget - g_servoYCurrent) * 0.05f;
+    int pitch = (int)(g_servoYCurrent + 0.5f);
+    pitch = constrain(pitch, 0, 180);
+    servoY.write(pitch);
+}
+
 // ---- 表情更新 ----
 void updateAvatarExpression() {
     if (!g_env.valid) {
@@ -357,36 +438,25 @@ void updateAvatarExpression() {
     avatar.setExpression(expr);
 }
 
-// ---- 吹き出し更新（モード別） ----
-void updateSpeechForMode() {
+// ---- 吹き出し更新（単一モード） ----
+void updateSpeech() {
     if (!g_showSpeech) {
         avatar.setSpeechText("");
         return;
     }
 
-    char buf[160];
-
-    switch (g_mode) {
-        case UIMode::Live:
-            if (!g_env.valid) {
-                avatar.setSpeechText("Waiting MQTT...");
-            } else {
-                snprintf(buf, sizeof(buf),
-                         "Now T:%.1fC (off:%.1f)\nH:%.0f%% P:%.0fhPa\nLogs:%d  C:Offset",
-                         g_env.temperature, g_tempOffset,
-                         g_env.humidity, g_env.pressure,
-                         (int)g_logCount);
-                avatar.setSpeechText(buf);
-            }
-            break;
-
-        case UIMode::Offset:
-            snprintf(buf, sizeof(buf),
-                     "Offset mode\nTemp off: %.1fC\nA:-0.5  B:+0.5\nC:Back",
-                     g_tempOffset);
-            avatar.setSpeechText(buf);
-            break;
+    if (!g_env.valid) {
+        avatar.setSpeechText("Waiting MQTT...");
+        return;
     }
+
+    char buf[160];
+    snprintf(buf, sizeof(buf),
+             "Now T:%.1fC (off:%.1f)\nH:%.0f%% P:%.0fhPa\nLogs:%d",
+             g_env.temperature, g_tempOffset,
+             g_env.humidity, g_env.pressure,
+             (int)g_logCount);
+    avatar.setSpeechText(buf);
 }
 
 // ---- SoftAP 起動 ----
@@ -429,12 +499,8 @@ void startMQTTBroker() {
 
             addLogEntry(g_env);
             updateAvatarExpression();
-            if (g_mode == UIMode::Live) {
-                updateSpeechForMode();
-            }
-
-            // ★ 温度更新のたびにLEDも更新
-            updateLedsByTemp();
+            updateSpeech();
+            updateLedsForTemp();
         }
     });
 
@@ -448,42 +514,47 @@ void handleRoot() {
     String html;
     html.reserve(4096);
 
-    html += F("<!DOCTYPE html><html><head><meta charset='UTF-8'>");
-    html += F("<title>Stackchan Env Console</title>");
-    html += F("<meta name='viewport' content='width=device-width,initial-scale=1'>");
-    html += F("<style>body{font-family:sans-serif;margin:8px;}table{border-collapse:collapse;width:100%;}"
-              "th,td{border:1px solid #ccc;padding:4px;font-size:12px;}th{background:#eee;}"
-              "a.btn{display:inline-block;margin:2px 4px;padding:4px 8px;border:1px solid #333;"
-              "border-radius:4px;text-decoration:none;font-size:12px;}"
-              "</style></head><body>");
+    html += "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
+    html += "<title>Stackchan Env Console</title>";
+    html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
+    html += "<style>";
+    html += "body{font-family:sans-serif;margin:8px;}";
+    html += "table{border-collapse:collapse;width:100%;}";
+    html += "th,td{border:1px solid #ccc;padding:4px;font-size:12px;}";
+    html += "th{background:#eee;}";
+    html += "a.btn{display:inline-block;margin:2px 4px;padding:4px 8px;border:1px solid #333;";
+    html += "border-radius:4px;text-decoration:none;font-size:12px;}";
+    html += "</style></head><body>";
 
-    html += F("<h2>Stackchan Env Console</h2>");
+    html += "<h2>Stackchan Env Console</h2>";
 
     // 現在値
-    html += F("<h3>Current</h3><ul>");
+    html += "<h3>Current</h3><ul>";
     if (!g_env.valid) {
-        html += F("<li>Waiting MQTT...</li>");
+        html += "<li>Waiting MQTT...</li>";
     } else {
-        html += "<li>Temperature: " + String(g_env.temperature, 1) + " &deg;C (offset "
-              + String(g_tempOffset, 1) + " &deg;C)</li>";
-        html += "<li>Humidity: "    + String(g_env.humidity, 0) + " %</li>";
-        html += "<li>Pressure: "    + String(g_env.pressure, 1) + " hPa</li>";
+        html += "<li>Temperature: " + String(g_env.temperature, 1) +
+                " &deg;C (offset " + String(g_tempOffset, 1) + " &deg;C)</li>";
+        html += "<li>Humidity: " + String(g_env.humidity, 0) + " %</li>";
+        html += "<li>Pressure: " + String(g_env.pressure, 1) + " hPa</li>";
     }
     html += "</ul>";
 
-    // オフセット操作
-    html += F("<h3>Offset</h3>");
+    // オフセット操作（Webからのみ変更）
+    html += "<h3>Offset</h3>";
     html += "<p>Temp offset: <b>" + String(g_tempOffset, 1) + " &deg;C</b></p>";
-    html += F("<p>"
-              "<a class='btn' href='/offset?delta=-0.5'>-0.5 C</a>"
-              "<a class='btn' href='/offset?delta=0.5'>+0.5 C</a>"
-              "</p>");
+    html += "<p>";
+    html += "<a class='btn' href='/offset?delta=-0.5'>-0.5 C</a>";
+    html += "<a class='btn' href='/offset?delta=0.5'>+0.5 C</a>";
+    html += "</p>";
 
     // ログ一覧
-    html += F("<h3>Logs</h3>");
+    html += "<h3>Logs</h3>";
     html += "<p>Total: " + String((int)g_logCount) + "</p>";
 
-    html += F("<table><tr><th>#</th><th>Temp</th><th>Hum</th><th>Press</th><th>Age(s)</th><th>Action</th></tr>");
+    html += "<table><tr>"
+            "<th>#</th><th>Temp</th><th>Hum</th><th>Press</th><th>Age(s)</th><th>Action</th>"
+            "</tr>";
     for (size_t i = 0; i < g_logCount; ++i) {
         const auto& e = g_logs[i];
         html += "<tr>";
@@ -498,15 +569,15 @@ void handleRoot() {
     html += "</table>";
 
     if (g_logCount > 0) {
-        html += F("<p><a class='btn' href='/clear'>Clear All Logs</a></p>");
+        html += "<p><a class='btn' href='/clear'>Clear All Logs</a></p>";
     }
 
-    html += F("<hr><p>操作メモ：<br>"
-              "- 起動直後は本体画面にQRコードが出ます。<br>"
-              "- スマホでWi-Fi用QR → Web用QRの順に読むと、このページを開けます。<br>"
-              "- CボタンでAvatarモードに切り替え後も、このページはそのまま使えます。</p>");
+    html += "<hr><p>操作メモ：<br>"
+            "- 起動直後は本体画面にQRコードが出ます。<br>"
+            "- スマホでWi-Fi用QR → Web用QRの順に読むと、このページを開けます。<br>"
+            "- Avatar画面でもこのページからオフセットとログ操作ができます。</p>";
 
-    html += F("</body></html>");
+    html += "</body></html>";
 
     server.send(200, "text/html", html);
 }
@@ -523,11 +594,8 @@ void handleOffset() {
     if (g_env.valid && g_bootPhase == BootPhase::Avatar) {
         g_env.temperature += delta;
         updateAvatarExpression();
-        if (g_mode == UIMode::Live) {
-            updateSpeechForMode();
-        }
-        // オフセット変化時もLED更新
-        updateLedsByTemp();
+        updateSpeech();
+        updateLedsForTemp();
     }
 
     server.sendHeader("Location", "/");
@@ -624,8 +692,10 @@ void enterAvatarMode() {
 
     avatar.init();
     avatar.setExpression(Expression::Neutral);
-    g_mode = UIMode::Live;
-    updateSpeechForMode();  // "Waiting MQTT..." 等
+    updateSpeech();       // "Waiting MQTT..." 等
+
+    initServo();          // サーボ初期化
+    updateLedsForTemp();  // 初期状態は消灯になる
 
     startMQTTBroker();
     g_bootPhase = BootPhase::Avatar;
@@ -640,6 +710,8 @@ void setup() {
 
     Serial.begin(115200);
     delay(200);
+
+    randomSeed(esp_random());
 
     M5.Display.setRotation(1);
     M5.Display.fillScreen(BLACK);
@@ -683,11 +755,7 @@ void setup() {
 
     // ---- Step5: LED 初期化 ----
     M5.Display.println("Step5: init LEDs...");
-    bodyStrip.begin();
-    earsStrip.begin();
-    bodyStrip.setBrightness(40); // 0-255 お好みで
-    earsStrip.setBrightness(40);
-    turnOffAllLeds();
+    initLeds();
 
     // ---- 起動完了 → QRモードへ ----
     M5.Display.println();
@@ -728,54 +796,27 @@ void loop() {
 
     // ===== ここから Avatar モード中の処理 =====
 
-    switch (g_mode) {
-        case UIMode::Live:
-            if (M5.BtnA.wasPressed()) {
-                g_showSpeech = !g_showSpeech;
-                updateSpeechForMode();
-            }
-            if (M5.BtnB.wasPressed()) {
-                if (g_env.valid) {
-                    addLogEntry(g_env);
-                    updateSpeechForMode();
-                }
-            }
-            if (M5.BtnC.wasPressed()) {
-                g_mode = UIMode::Offset;
-                updateSpeechForMode();
-            }
-            break;
-
-        case UIMode::Offset:
-            if (M5.BtnA.wasPressed()) {
-                g_tempOffset -= 0.5f;
-                saveOffsetToFS();
-                if (g_env.valid) {
-                    g_env.temperature -= 0.5f;
-                    updateAvatarExpression();
-                    updateLedsByTemp();
-                }
-                updateSpeechForMode();
-            }
-            if (M5.BtnB.wasPressed()) {
-                g_tempOffset += 0.5f;
-                saveOffsetToFS();
-                if (g_env.valid) {
-                    g_env.temperature += 0.5f;
-                    updateAvatarExpression();
-                    updateLedsByTemp();
-                }
-                updateSpeechForMode();
-            }
-            if (M5.BtnC.wasPressed()) {
-                g_mode = UIMode::Live;
-                updateSpeechForMode();
-            }
-            break;
+    // A: 吹き出しON/OFF
+    if (M5.BtnA.wasPressed()) {
+        g_showSpeech = !g_showSpeech;
+        updateSpeech();
     }
+
+    // B: ログを1件追加
+    if (M5.BtnB.wasPressed()) {
+        if (g_env.valid) {
+            addLogEntry(g_env);
+            updateSpeech();
+        }
+    }
+
+    // C: 今は特に使っていない（将来拡張用）
 
     // MQTT ブローカ処理
     mqtt.loop();
+
+    // サーボの公式風「ゆらゆら＋かしげ」
+    updateServoIdle();
 
     delay(10);
 }
