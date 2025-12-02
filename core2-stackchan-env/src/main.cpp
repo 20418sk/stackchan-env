@@ -126,7 +126,17 @@ Adafruit_NeoPixel bodyStrip(BODY_LED_COUNT, BODY_LED_PIN, NEO_GRB + NEO_KHZ800);
 Adafruit_NeoPixel earsStrip(EARS_LED_COUNT, EARS_LED_PIN, NEO_GRB + NEO_KHZ800);
 
 bool g_ledInited = false;
-bool g_ledWasOn = false;   // 直前フレームでLEDが点灯していたか？
+bool g_ledWasOn  = false;   // 直前フレームでLEDが点灯していたか？
+
+// ======================================================================
+//  表情変化／鳴き声制御用
+// ======================================================================
+// 直前の表情（表情変化検出用）
+Expression g_lastExpression   = Expression::Neutral;
+bool       g_exprInitialized  = false;
+
+// 「次のループで悲鳴を鳴らしてほしい」フラグ
+bool       g_requestScream    = false;
 
 // ======================================================================
 //  プロトタイプ宣言
@@ -146,6 +156,7 @@ void  initServo();
 void  updateServoIdle();
 void  getCurrentDatetimeString(char* buf, size_t len);
 void  handleSetTime();
+Expression getExpressionForTemp(float t);   // 温度→表情 ヘルパー
 
 // ======================================================================
 //  致命的エラー表示
@@ -209,11 +220,33 @@ void turnOffAllLeds() {
     setAllLedsColor(0, 0, 0);
 }
 
-// 温度に応じて LED 色切り替え
+// ======================================================================
+//  温度 → Expression 判定（共通ロジック）
+// ======================================================================
+Expression getExpressionForTemp(float t) {
+    if (t < 18.0f) {
+        return Expression::Sad;
+    } else if (t < 22.0f) {
+        return Expression::Neutral;
+    } else if (t <= 26.0f) {
+        return Expression::Happy;
+    } else if (t <= 30.0f) {
+        return Expression::Doubt;
+    } else {
+        return Expression::Angry;
+    }
+}
+
+// ======================================================================
+//  温度に応じて LED 色切り替え（表情と連動）
+//   Sad    = 青
+//   Neutral= 水色
+//   Doubt  = ピンク
+//   Angry  = 赤
+//   Happy  = 消灯
+// ======================================================================
 void updateLedsForTemp() {
     if (!g_ledInited) return;
-
-    bool shouldBeOn = false;
 
     if (!g_env.valid) {
         turnOffAllLeds();
@@ -221,22 +254,49 @@ void updateLedsForTemp() {
         return;
     }
 
-    float t = g_env.temperature;
+    // 温度から表情を取得（Avatar と同じロジック）
+    Expression expr = getExpressionForTemp(g_env.temperature);
 
-    if (t < 18.0f) {
-        setAllLedsColor(0, 0, 160);   // 青
-        shouldBeOn = true;
-    } else if (t > 30.0f) {
-        setAllLedsColor(200, 40, 40); // 赤
-        shouldBeOn = true;
-    } else {
-        turnOffAllLeds();
-        shouldBeOn = false;
+    uint8_t r = 0, g = 0, b = 0;
+    bool shouldBeOn = true;
+
+    switch (expr) {
+        case Expression::Sad:
+            // 青
+            r = 0;   g = 0;   b = 160;
+            break;
+
+        case Expression::Neutral:
+            // 水色（シアン寄り）
+            r = 80;  g = 160; b = 160;
+            break;
+
+        case Expression::Doubt:
+            // ピンク
+            r = 200; g = 80;  b = 160;
+            break;
+
+        case Expression::Angry:
+            // 赤
+            r = 200; g = 40;  b = 40;
+            break;
+
+        case Expression::Happy:
+        default:
+            // 快適ゾーン：耳は光らせない
+            turnOffAllLeds();
+            shouldBeOn = false;
+            break;
     }
 
-    // ★ 光った瞬間に悲鳴を鳴らす
+    if (shouldBeOn) {
+        setAllLedsColor(r, g, b);
+    }
+
+    // ★ 消灯状態 → 点灯状態に変わったタイミングでだけ
+    //    「鳴いてほしい」フラグを立てる（ここでは音は鳴らさない）
     if (shouldBeOn && !g_ledWasOn) {
-        playScreamSound();
+        g_requestScream = true;
     }
 
     g_ledWasOn = shouldBeOn;
@@ -244,10 +304,6 @@ void updateLedsForTemp() {
 
 // ======================================================================
 //  人間が「助けたくなる」弱々しい電子泣き声
-//  - 高め（幼さ）
-//  - 震える（弱っている）
-//  - ひっ → ひぃ〜（感情の変化）
-//  - 全体的に細くて息が弱い
 // ======================================================================
 void playScreamSound() {
 
@@ -255,20 +311,19 @@ void playScreamSound() {
     M5.Speaker.tone(1800, 50);   // か細い高め
     delay(40);
 
-    // ② 震える弱音「ぴ…ひっ…」
+    // ② 震える弱音
     for (int i = 0; i < 5; i++) {
         int f = 1600 + (int)(sin(i * 1.1f) * 180.0f);  // 揺れを大きめに
         M5.Speaker.tone(f, 40);
         delay(25);
     }
 
-    // ③ 今にも涙がこぼれそうな伸び「ひぃ〜〜；；」
-    M5.Speaker.tone(2200, 280);  // 弱く長く泣くイメージ
+    // ③ 今にも涙がこぼれそうな伸び
+    M5.Speaker.tone(2200, 280);
 
-    // ④ 息がしぼむ（弱り感）
+    // ④ 息がしぼむ
     M5.Speaker.tone(1300, 60);
 }
-
 
 // ======================================================================
 //  LittleFS: オフセットの読み書き
@@ -331,7 +386,6 @@ bool loadLogsFromFS() {
         float t, h, p;
         char  dtstr[20] = {0};
 
-        // datetime はスペースを含むので %[^\n] で行末まで読む
         if (sscanf(line.c_str(), "%f,%f,%f,%19[^\n]",
                    &t, &h, &p, dtstr) == 4) {
             EnvLogEntry e;
@@ -483,10 +537,8 @@ void initServo() {
 //  ボタン操作音
 // ======================================================================
 void playClickSound() {
-    // 周波数 1000Hz、40ms くらいの短い「ピッ」
     M5.Speaker.tone(1000, 40);
 }
-
 
 // ======================================================================
 //  公式風 IDLE モーション
@@ -523,30 +575,30 @@ void updateServoIdle() {
 }
 
 // ======================================================================
-//  Avatar 表情
+//  Avatar 表情（温度→表情ヘルパーを使用）
+//   表情が変わったタイミングで g_requestScream = true にする
 // ======================================================================
 void updateAvatarExpression() {
     if (!g_env.valid) {
         avatar.setExpression(Expression::Neutral);
+        g_lastExpression  = Expression::Neutral;
+        g_exprInitialized = true;
         return;
     }
 
-    float t = g_env.temperature;
-    Expression expr = Expression::Neutral;
+    Expression newExpr = getExpressionForTemp(g_env.temperature);
 
-    if (t < 18.0f) {
-        expr = Expression::Sad;
-    } else if (t < 22.0f) {
-        expr = Expression::Neutral;
-    } else if (t <= 26.0f) {
-        expr = Expression::Happy;
-    } else if (t <= 30.0f) {
-        expr = Expression::Doubt;
-    } else {
-        expr = Expression::Angry;
+    if (!g_exprInitialized) {
+        // 起動直後は「変化」とみなさない（いきなり鳴かない）
+        g_lastExpression  = newExpr;
+        g_exprInitialized = true;
+    } else if (newExpr != g_lastExpression) {
+        // 表情が変わったタイミングでだけ鳴きリクエスト
+        g_requestScream = true;
+        g_lastExpression = newExpr;
     }
 
-    avatar.setExpression(expr);
+    avatar.setExpression(newExpr);
 }
 
 // ======================================================================
@@ -615,9 +667,9 @@ void startMQTTBroker() {
             g_env.valid       = true;
 
             addLogEntry(g_env);
-            updateAvatarExpression();
+            updateAvatarExpression();  // ここではフラグを立てるだけ
             updateSpeech();
-            updateLedsForTemp();
+            updateLedsForTemp();       // ここでも必要ならフラグを立てる
         }
     });
 
@@ -679,42 +731,37 @@ void handleRoot() {
     html += "</p>";
 
     // ログ一覧
-html += "<h3>Logs</h3>";
-html += "<p>Total: " + String((int)g_logCount) + "</p>";
+    html += "<h3>Logs</h3>";
+    html += "<p>Total: " + String((int)g_logCount) + "</p>";
 
-html += "<table><tr>"
-        "<th>#</th>"
-        "<th>Datetime</th>"
-        "<th>Temp</th>"
-        "<th>Hum</th>"
-        "<th>Press</th>"
-        "<th>Action</th>"
-        "</tr>";
+    html += "<table><tr>"
+            "<th>#</th>"
+            "<th>Datetime</th>"
+            "<th>Temp</th>"
+            "<th>Hum</th>"
+            "<th>Press</th>"
+            "<th>Action</th>"
+            "</tr>";
 
-for (size_t i = 0; i < g_logCount; ++i) {
-    const auto& e = g_logs[i];
+    for (size_t i = 0; i < g_logCount; ++i) {
+        const auto& e = g_logs[i];
 
-    // ここは「表示時のRTC時刻」になっています
-    // →「ログ取得タイムスタンプを保存したい」場合は別方式にできます！
-    char dtBuf[20];
-    getCurrentDatetimeString(dtBuf, sizeof(dtBuf));
+        html += "<tr>";
+        html += "<td>" + String((int)i) + "</td>";
+        html += "<td>" + String(e.datetime) + "</td>";
+        html += "<td>" + String(e.temperature, 1) + "</td>";
+        html += "<td>" + String(e.humidity, 0)    + "</td>";
+        html += "<td>" + String(e.pressure, 1)    + "</td>";
+        html += "<td><a class='btn' href='/delete?index=" + String((int)i) +
+                "'>Delete</a></td>";
+        html += "</tr>";
+    }
 
-    html += "<tr>";
-    html += "<td>" + String((int)i) + "</td>";              // ← # 列（復活）
-    html += "<td>" + String(dtBuf) + "</td>";               // Datetime
-    html += "<td>" + String(e.temperature, 1) + "</td>";    // Temp
-    html += "<td>" + String(e.humidity, 0)    + "</td>";    // Hum
-    html += "<td>" + String(e.pressure, 1)    + "</td>";    // Press
-    html += "<td><a class='btn' href='/delete?index=" + String((int)i) +
-            "'>Delete</a></td>";                           // Action
-    html += "</tr>";
-}
+    html += "</table>";
 
-html += "</table>";
-
-if (g_logCount > 0) {
-    html += "<p><a class='btn' href='/clear'>Clear All Logs</a></p>";
-}
+    if (g_logCount > 0) {
+        html += "<p><a class='btn' href='/clear'>Clear All Logs</a></p>";
+    }
 
     html += "<hr><p>操作メモ：<br>"
             "- 起動直後は本体画面にQRコードが出ます。<br>"
@@ -777,9 +824,6 @@ void handleClear() {
 
 // ======================================================================
 //  HTTP: RTC 時刻設定 (/settime)
-//   - /settime?dt=YYYY/MM/DD HH:MM:SS
-//   - パラメータなしでアクセス → 設定ページを表示
-//   - 「この端末の時間でセット」ボタンで JS の Date を RTC に反映
 // ======================================================================
 void handleSetTime() {
     // dt 無し → 設定フォームを表示
@@ -799,12 +843,11 @@ void handleSetTime() {
         html += "button{margin:4px 0;padding:4px 8px;}";
         html += "</style>";
         html += "<script>";
-        // JSでスマホ(ブラウザ)の現在時刻を取得して /settime?dt=... に投げる
         html += "function pad(n){return n<10?'0'+n:n;}";
         html += "function setFromDeviceTime(){";
         html += "  var d=new Date();";
         html += "  var y=d.getFullYear();";
-        html += "  var m=pad(d.getMonth()+1);"; // 0-11 → 1-12
+        html += "  var m=pad(d.getMonth()+1);";
         html += "  var dd=pad(d.getDate());";
         html += "  var hh=pad(d.getHours());";
         html += "  var mm=pad(d.getMinutes());";
@@ -844,8 +887,7 @@ void handleSetTime() {
         return;
     }
 
-    // ここから先は「dt 付きで来たとき」の処理（前と同じ）
-
+    // dt 付きで来たとき
     String s = server.arg("dt");
     s.trim();
 
@@ -1085,14 +1127,19 @@ void loop() {
         }
     }
 
-        if (M5.BtnC.wasPressed()) {
-        // 未使用、将来機能を足す
-        // 音だけ鳴らす
+    if (M5.BtnC.wasPressed()) {
+        // 未使用（音だけ鳴らす等に使っても良い）
         playClickSound();
     }
 
     mqtt.loop();
     updateServoIdle();
+
+    // ★ このタイミングでだけ「ぴひぃ〜」を実行
+    if (g_requestScream) {
+        playScreamSound();
+        g_requestScream = false;
+    }
 
     delay(10);
 
