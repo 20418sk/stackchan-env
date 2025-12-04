@@ -66,6 +66,7 @@ M5Stackデバイスを使用した、完全スタンドアロン・オフライ�
 *   **Webコンソール**: スマホ等から `http://192.168.4.1/` にアクセスして操作します。
 
 #### StickC Plus2 (センサー側)
+![画像1](https://github.com/user-attachments/assets/ee56a2c9-bca6-40ac-bb19-e7e98ebcf85d)
 1.  電源を入れると自動的に `Core2EnvAP` に接続し、計測を開始します。
 2.  画面には 温度・湿度・気圧・**高度** が表示されます。
 
@@ -103,6 +104,7 @@ M5Stackデバイスを使用した、完全スタンドアロン・オフライ�
     *例:* `25.4,45.2,1013.2`
 
 ### Webコンソール (`http://192.168.4.1/`)
+<img width="1080" height="2424" alt="392" src="https://github.com/user-attachments/assets/4c9f57bf-dae2-44bf-853b-f04cbcbd6ad5" />
 *   **Current**: 現在のセンサー値確認。
 *   **RTC Time**: Core2内部時計の確認と設定（スマホの時刻と同期可能）。
 *   **Offset**: 温度読み取り値の校正（±0.5℃単位）。
