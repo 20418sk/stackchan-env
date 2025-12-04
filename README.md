@@ -105,6 +105,7 @@ M5Stackデバイスを使用した、完全スタンドアロン・オフライ�
 
 ### Webコンソール (`http://192.168.4.1/`)
 <img width="300" src="https://github.com/user-attachments/assets/4c9f57bf-dae2-44bf-853b-f04cbcbd6ad5"/>
+
 *   **Current**: 現在のセンサー値確認。
 *   **RTC Time**: Core2内部時計の確認と設定（スマホの時刻と同期可能）。
 *   **Offset**: 温度読み取り値の校正（±0.5℃単位）。
