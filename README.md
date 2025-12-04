@@ -2,9 +2,7 @@
 
 M5Stackデバイスを使用した、完全スタンドアロン・オフラインのスマート環境モニターシステムです。
 
-このプロジェクトは、**M5Stack Core2 for AWS** を「スタックチャン」ロボット（Wi-Fi AP + MQTTブローカー + Webサーバー）として機能させ、**M5StickC Plus2** センサーノードから環境データを受信し、温度に応じて表情やLEDの色を変化させます。
-
-![System Overview]
+このプロジェクトは、**M5Stack Core2 for AWS** を「ｽﾀｯｸﾁｬﾝ」ロボット（Wi-Fi AP + MQTTブローカー + Webサーバー）として機能させ、**M5StickC Plus2** センサーノードから環境データを受信し、温度に応じて表情やLEDの色を変化させます。
 
 ## 🌟 特徴
 
@@ -75,6 +73,9 @@ M5Stackデバイスを使用した、完全スタンドアロン・オフライ�
 
 温度に応じてスタックチャンの機嫌（表情と色）が変わります。
 
+<img width="543" height="537" alt="スクリーンショット 2025-12-04 142142" src="https://github.com/user-attachments/assets/74985ce6-48f1-4cab-b77e-87da09cd212e" />
+<img width="425" height="487" alt="スクリーンショット 2025-12-04 142627" src="https://github.com/user-attachments/assets/370f5642-919f-4717-a7dd-0fa397e9dd13" />
+
 | 温度範囲 | 表情 (Expression) | LED色 | 状態 |
 | :--- | :--- | :--- | :--- |
 | **< 18.0℃** | Sad (悲しい) | **青** | 寒い |
@@ -120,6 +121,14 @@ M5Stackデバイスを使用した、完全スタンドアロン・オフライ�
     └── platformio.ini        # 依存関係: M5Unified, M5UnitUnified, PubSubClient
 ```
 
+## データ構造図
+<img width="1379" height="1306" alt="スクリーンショット 2025-12-04 150308" src="https://github.com/user-attachments/assets/af048a97-2338-48a8-aa7d-224ee1b0be1a" />
+
+
+## データ処理シーケンス
+<img width="1290" height="1028" alt="スクリーンショット 2025-12-04 150402" src="https://github.com/user-attachments/assets/04e2eef5-2c5e-45e0-ad81-4cc3397e547c" />
+
+
 ## 📚 使用ライブラリ
 
 *   [M5Unified](https://github.com/m5stack/M5Unified)
@@ -129,6 +138,12 @@ M5Stackデバイスを使用した、完全スタンドアロン・オフライ�
 *   [M5UnitUnified](https://github.com/m5stack/M5UnitUnified) (センサー)
 *   [ESP32Servo](https://github.com/madhephaestus/ESP32Servo)
 *   [Adafruit NeoPixel](https://github.com/adafruit/Adafruit_NeoPixel)
+
+
+## ｽﾀｯｸﾁｬﾝについて
+ｽﾀｯｸﾁｬﾝはししかわさんが公開しているオープンソースのプロジェクトです。
+https://github.com/stack-chan/stack-chan
+
 
 ## 📝 ライセンス
 
