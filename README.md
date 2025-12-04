@@ -74,8 +74,8 @@ M5Stackデバイスを使用した、完全スタンドアロン・オフライ�
 
 温度に応じてスタックチャンの機嫌（表情と色）が変わります。
 
-<img width="543" height="537" alt="スクリーンショット 2025-12-04 142142" src="https://github.com/user-attachments/assets/74985ce6-48f1-4cab-b77e-87da09cd212e" />
-<img width="425" height="487" alt="スクリーンショット 2025-12-04 142627" src="https://github.com/user-attachments/assets/370f5642-919f-4717-a7dd-0fa397e9dd13" />
+<img width="300" src="https://github.com/user-attachments/assets/74985ce6-48f1-4cab-b77e-87da09cd212e" />
+<img width="300" src="https://github.com/user-attachments/assets/370f5642-919f-4717-a7dd-0fa397e9dd13" />
 
 | 温度範囲 | 表情 (Expression) | LED色 | 状態 |
 | :--- | :--- | :--- | :--- |
@@ -104,7 +104,7 @@ M5Stackデバイスを使用した、完全スタンドアロン・オフライ�
     *例:* `25.4,45.2,1013.2`
 
 ### Webコンソール (`http://192.168.4.1/`)
-<img width="1080" height="2424" alt="392" src="https://github.com/user-attachments/assets/4c9f57bf-dae2-44bf-853b-f04cbcbd6ad5" />
+<img width="300" src="https://github.com/user-attachments/assets/4c9f57bf-dae2-44bf-853b-f04cbcbd6ad5"/>
 *   **Current**: 現在のセンサー値確認。
 *   **RTC Time**: Core2内部時計の確認と設定（スマホの時刻と同期可能）。
 *   **Offset**: 温度読み取り値の校正（±0.5℃単位）。
