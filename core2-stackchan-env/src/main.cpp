@@ -993,9 +993,10 @@ void showWifiQRScreen() {
 
     M5.Display.setTextSize(1);
     M5.Display.setCursor(8, qrY + qrSize + 4);
+    M5.Display.println("Wi-Fi Setup")
     M5.Display.printf("SSID: %s\n", AP_SSID);
     M5.Display.printf("PASS: %s\n\n", AP_PASSWORD);
-    M5.Display.println("B: Web用QRに切替");
+    M5.Display.println("B: Switch to Web QR");
     M5.Display.println("C: Avatar mode start");
 }
 
@@ -1019,12 +1020,11 @@ void showUrlQRScreen() {
 
     M5.Display.setTextSize(1);
     M5.Display.setCursor(8, qrY + qrSize + 4);
-    M5.Display.println("[Webコンソール用]");
-    M5.Display.println("ブラウザで自動で");
+    M5.Display.println("[Web Console]");
+    M5.Display.println("Opening browser at:");
     M5.Display.println("http://192.168.4.1/");
-    M5.Display.println("を開きます。");
     M5.Display.println();
-    M5.Display.println("B: Wi-Fi用QRに戻る");
+    M5.Display.println("B:Back to Wi-Fi QR");
     M5.Display.println("C: Avatar mode start");
 }
 
