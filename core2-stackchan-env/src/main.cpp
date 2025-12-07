@@ -993,7 +993,6 @@ void showWifiQRScreen() {
 
     M5.Display.setTextSize(1);
     M5.Display.setCursor(8, qrY + qrSize + 4);
-    M5.Display.println("[Wi-Fi接続用]");
     M5.Display.printf("SSID: %s\n", AP_SSID);
     M5.Display.printf("PASS: %s\n\n", AP_PASSWORD);
     M5.Display.println("B: Web用QRに切替");
