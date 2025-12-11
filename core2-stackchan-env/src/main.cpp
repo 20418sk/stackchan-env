@@ -22,9 +22,16 @@ Servo servoX;   // 左右（ヨー）
 Servo servoY;   // 上下（ピッチ）
 bool  g_servoAttached = false;  // attach 済みかどうか
 
-// サーボの接続ピン（Core2 カスタムシールド前提）
-constexpr int SERVO_X_PIN = 33;
-constexpr int SERVO_Y_PIN = 32;
+// サーボの接続ピン
+#if defined(ARDUINO_M5STACK_Core2)
+  // Core2 (Bottom2 for custom shield or PortA/C if configured)
+  constexpr int SERVO_X_PIN = 33;
+  constexpr int SERVO_Y_PIN = 32;
+#else
+  // Basic / Gray / Go (Port A)
+  constexpr int SERVO_X_PIN = 22;
+  constexpr int SERVO_Y_PIN = 21;
+#endif
 
 // 基準角度（センター位置）と左右スイング幅
 constexpr int SERVO_X_CENTER    = 90;
@@ -118,14 +125,20 @@ bool g_showSpeech = true;
 // ======================================================================
 //  LED（本体＋猫耳）設定
 // ======================================================================
-// Core2 底面 SK6812（10個）
-static const int BODY_LED_PIN   = 25;
+// Core2 底面 SK6812 (10個) / Basic M5GO Bottom (10個)
+#if defined(ARDUINO_M5STACK_Core2)
+  static const int BODY_LED_PIN = 25;
+#else
+  // Basic + M5GO Battery Bottom
+  static const int BODY_LED_PIN = 15;
+#endif
 static const int BODY_LED_COUNT = 10;
 
 // 猫耳 LED（左右9個ずつ = 18個）
 static const int EARS_LED_PIN   = 26;   // PortB OUT などに接続
 static const int EARS_LED_COUNT = 18;
 
+// BODY LEDと猫耳LEDを有効化
 Adafruit_NeoPixel bodyStrip(BODY_LED_COUNT, BODY_LED_PIN, NEO_GRB + NEO_KHZ800);
 Adafruit_NeoPixel earsStrip(EARS_LED_COUNT, EARS_LED_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -993,7 +1006,7 @@ void showWifiQRScreen() {
 
     M5.Display.setTextSize(1);
     M5.Display.setCursor(8, qrY + qrSize + 4);
-    M5.Display.println("Wi-Fi Setup")
+    M5.Display.println("[Wi-Fi Setup]");
     M5.Display.printf("SSID: %s\n", AP_SSID);
     M5.Display.printf("PASS: %s\n\n", AP_PASSWORD);
     M5.Display.println("B: Switch to Web QR");
@@ -1021,10 +1034,10 @@ void showUrlQRScreen() {
     M5.Display.setTextSize(1);
     M5.Display.setCursor(8, qrY + qrSize + 4);
     M5.Display.println("[Web Console]");
-    M5.Display.println("Opening browser at:");
+    M5.Display.ptintln("Opening browser at :")
     M5.Display.println("http://192.168.4.1/");
     M5.Display.println();
-    M5.Display.println("B:Back to Wi-Fi QR");
+    M5.Display.println("B: Back to Wi-Fi QR");
     M5.Display.println("C: Avatar mode start");
 }
 
