@@ -1034,7 +1034,7 @@ void showUrlQRScreen() {
     M5.Display.setTextSize(1);
     M5.Display.setCursor(8, qrY + qrSize + 4);
     M5.Display.println("[Web Console]");
-    M5.Display.ptintln("Opening browser at :")
+    M5.Display.println("Opening browser at :");
     M5.Display.println("http://192.168.4.1/");
     M5.Display.println();
     M5.Display.println("B: Back to Wi-Fi QR");
